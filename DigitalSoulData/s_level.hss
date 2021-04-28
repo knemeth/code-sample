@@ -1,0 +1,103 @@
+# level.hss
+# Parses NPC layout on maps designed in level editor and stores data in an array
+# Distributes these NPCs as waves
+
+script, createLevelArray, begin
+    # Called from mapAutorun script
+    # Create an array, add each npc placed in the level editor
+    variable(a, x, y, ref, drop, offset)
+
+    # a[0+n] = npc id, a[1+n] = row, a[2+n] = x, a[3+n] = y, a[4+n] = powerup drop
+    levelArray := initArray()
+    a := levelArray # alias for easier typing
+
+    for(y, 0, mapHeight--1) do(
+        for(x, 0, 25) do(
+            # Loop through all tiles on the map
+            drop := 0
+            if(npcAtSpot(x, y, getCount) > 1) then(
+                # There's a powerup on this spot (in addition to an enemy)
+                # Powerup npcs are id 15 to 18
+                ref := npcAtSpot(x, y, 0)
+                if(getNPCID(ref) < 15) then(
+                    ref := npcAtSpot(x, y, 1)
+                )
+                # Powerup npc
+                drop := (getNPCID(ref) -- 14) * 2 # gets a powerup id 
+                destroyNPC(ref)
+            )
+            ref := npcAtSpot(x, y)
+            if(ref <> 0) then(
+                if(getNPCID(ref) <= 14 && getNPCID(ref) >= 11) then(
+                    # Skip some rows depending on id
+                    offset += (getNPCID(ref)--10) # add 1-4 to y position of next enemy
+                    destroyNPC(ref)
+                    continue
+                )
+                append(a, getNPCID(ref)) # a[0]
+                append(a, npcY(ref)+offset) # a[1]
+                if(npcX(ref) > 9) then(
+                    # spawn on left or right side 
+                    if(npcX(ref) < 18) then( # left
+                        append(a, -1) # a[2]
+                        append(a, npcX(ref)--9) # a[3]
+                    )
+                    else(  # right
+                        append(a, 10) # a[2]
+                        append(a, npcX(ref)--17) # a[3]
+                    )
+                ) else(
+                    append(a, npcX(ref)) # a[2]
+                    append(a, 0) # a[3]: top of the screen
+                )
+                append(a, drop) # a[4]
+
+                destroyNPC(ref)
+            )
+        )
+    )
+end
+
+script, progressLevel, begin
+    # Called from mainGameLoop
+    # Increment lvlProg, then check if 
+    variable(ref, mark)
+
+    if(controlsAreSuspended || levelArray == false || readGlobal(dialogue:currentText) > 0) then(exitScript)
+
+    lvlProg += 1
+    mark := lvlProg,mod,ticks:progress
+
+    if(childCount(levelArray) < 5) then(
+        # No more enemies queued up
+        if(nextNPCReference() == false) then(
+            # Move to next level 
+            freeSlice(levelArray)
+            levelArray := 0
+            lvlProg := 0
+            setTimer(timer:nextLevel, 180, 1, @moveToNextLevel)
+            exitScript
+        ) else(
+            exitScript # still enemies on screen
+        )
+    )
+
+    if(lvlProg > 1 && mark == 0) then(
+        # Spawn each enemy from the array whose row matches the current progress through the level 
+        while(childCount(levelArray) >= 5 && ge(levelArray, 1) == (lvlProg/ticks:progress)--1) do(
+            # NPC y position matches current progress
+            if(ge(levelArray, 0) > 18) then(
+                # Dialogue trigger npc, don't actually spawn it 
+                writeGlobal(dialogue:currentText, readNPC(ge(levelArray, 0), NPCstat:displayText))
+            ) else(
+                ref := createEnemy(ge(levelArray, 0), (ge(levelArray, 2)+playfield:LeftTile)*20, ge(levelArray, 3)*20, ge(levelArray, 4))
+            )
+            pop(levelArray, 0), pop(levelArray, 0), pop(levelArray, 0), pop(levelArray, 0), pop(levelArray, 0) # Remove this enemy from queue
+        )
+    )
+end
+
+script, getEnemiesLeft, begin
+    # Returns how many enemies are left to spawn in the current level
+    exitReturning(childCount(levelArray)/5)
+end

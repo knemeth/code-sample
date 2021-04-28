@@ -1,0 +1,392 @@
+# enemy.hss
+# Contains scripts for creating, editing, and commanding enemy npcs
+
+# ========================================
+# CREATE/DESTROY
+# ========================================
+
+script, createEnemy, id, x, y, drop=false, bearing=-1, begin
+    # Creates an NPC with the id given; may need special values later
+    # x and y are pixel positions
+    # npc extra0: direction, extra1: bullet timer, extra2: hp
+    variable(ref, sl)
+
+    ref := createNPC(id, x/20, y/20)
+    # Set hitbox size and position 
+    setSliceSize(getNPCSlice(ref), getEnemyWidth(ref), getEnemyHeight(ref))
+    putSlice(getNPCSlice(ref), x -- (sliceWidth(getNPCSlice(ref))/2), y -- (sliceHeight(getNPCSlice(ref))/2))
+    centerSlice(getNPCSprite(ref))
+    updateNPCorHeroFromSlice(getNPCSlice(ref))
+    # Set health from enemy stat 
+    setNPCExtra(ref, extra2, getEnemyStat(id, stat:hp))
+    # Initial bearing, -1 defaults to down 
+    if(bearing > -1) then(setEnemyDirection(ref, bearing))
+    else(setEnemyDirection(ref, 180))
+    # Parent for path arrays
+    sl := createContainer(0,0)
+    setParent(sl, getNPCSlice(ref))
+    writeEnemyPath(ref)
+    # Store subpixel position
+    sl := createContainer(0,0)
+    setParent(sl, getNPCSlice(ref))
+    putSlice(sl, sliceX(getNPCSlice(ref))*1000, sliceY(getNPCSlice(ref))*1000)
+
+    # Powerup drop on this enemy's death
+    if(drop) then(
+        setSliceExtra(getNPCSlice(ref), extra2, drop)
+    )
+
+    # Transparent 'cerber head' sprites 
+    if(id == 2) then(
+        setBlendingEnabled(getNPCSprite(ref), true)
+        setOpacity(getNPCSprite(ref), 70)
+    )
+    # Randomize 'lost soul' pic
+    if(id == 5 || id == 2) then(
+        setNPCDirection(ref, random(0,3))
+        setNPCFrame(ref, random(0,1))
+    )
+    # Boss health bar
+    if(id == 10) then(
+        writeGlobal(hud:bossLifeVisible, true)
+        writeGlobal(hud:bossNPC, 10)
+        writeGlobal(hud:bossEnemyType, 10)
+    )
+
+    exitReturning(ref)
+end
+
+# ========================================
+# BEHAVIOR/AI
+# ========================================
+
+script, updateEnemyBehavior, begin
+    # Called from mainGameLoop
+    # Loop through npcs and change behavior based on id
+    variable(ref)
+
+    if(enemiesAreSuspended) then(exitScript)
+
+    ref := nextNPCReference() 
+    while(ref) do(
+        performEnemyInstruction(ref)
+        # offscreen culling
+        if(sliceScreenY(getNPCSlice(ref)) > getScreenHeight + 40 || sliceScreenY(getNPCSlice(ref)) < -80
+        || sliceScreenX(getNPCSlice(ref)) > getScreenWidth + 80 || sliceScreenX(getNPCSlice(ref)) < -80
+            ) then(destroyNPC(ref))
+
+        ref := nextNPCReference(ref)
+    )
+end
+
+script, performEnemyInstruction, ref, begin
+    # Each enemy has a list of instructions, stored as an array, a 
+    # Check top instruction, decrement a[0] (duration) until 0,
+    # else, tick down a[2] (wait) until 0
+    # else, shoot a[3] bullets with enemy speed as rate
+    # else, remove instruction
+    variable(instruction, bearing, i)
+
+    instruction := firstChild(sliceChild(getNPCSlice(ref), 1))
+
+    bearing := ge(instruction, 1)
+    bearingUpdates()
+    setEnemyDirection(ref, bearing) # in s_move.hss
+
+    if(ge(instruction, 0) == 0) then(
+        if(ge(instruction, 2) > 0) then(
+            # Tick down wait
+            se(instruction, 2, ge(instruction, 2)--1)
+        ) else(
+            if(ge(instruction, 3) > 0 && NPCExtra(ref, extra1) == 0) then(
+                # Shoot until shots == 0
+                enemyShot()
+            )
+            if(ge(instruction, 3) <= 0) then(
+                # Next instruction
+                setNPCExtra(ref, extra1, 0) # reset bullet timer
+                freeSlice(instruction)
+                instructionUpdates() # Create new one if necessary
+                instruction := firstChild(sliceChild(getNPCSlice(ref), 1))
+            )
+        )
+    ) elseif(ge(instruction, 0) > -1) then(
+        # Tick down duration
+        se(instruction, 0, ge(instruction, 0)--1)
+    ) 
+
+    if(NPCExtra(ref, extra1) > 0) then(setNPCExtra(ref, extra1, NPCExtra(ref, extra1)--getEnemyStat(getNPCID(ref), stat:speed)))
+
+    subscript, enemyShot, begin
+        # Fires the correct shot for the enemy
+        variable(x, y, rand)
+
+        x := sliceScreenX(getNPCSlice(ref)) + (sliceWidth(getNPCSlice(ref))/2)
+        y := sliceScreenY(getNPCSlice(ref)) + sliceHeight(getNPCSlice(ref))
+        switch(getNPCID(ref)) do(
+            case(0) createBullet(enemyBulletLayer, x+2, y--2, 5, 2, 95+(ge(instruction, 3)*20), getEnemyStat(getNPCID(ref), stat:atk))
+            case(1) do(
+                createBullet(enemyBulletLayer, x, y--2, 12, 2, 180, getEnemyStat(getNPCID(ref), stat:atk))
+                createBullet(enemyBulletLayer, x--25, y--11, 4, 2, 210, getEnemyStat(getNPCID(ref), stat:atk))
+                createBullet(enemyBulletLayer, x+25, y--11, 4, 2, 150, getEnemyStat(getNPCID(ref), stat:atk))
+                x += cameraPixelX, y += cameraPixelY
+                if(bearing == -1) then(createEnemy(2, x, y, powerup:power))
+            )
+            case(2) do(
+                createBullet(enemyBulletLayer, x, y--2, 3, 3, bearing--10, getEnemyStat(getNPCID(ref), stat:atk))
+                createBullet(enemyBulletLayer, x, y--2, 3, 3, bearing+10, getEnemyStat(getNPCID(ref), stat:atk))
+            )
+            case(3) do(
+                x += cameraPixelX, y += cameraPixelY
+                createEnemy(4, x, y, false, 315), createEnemy(4, x, y, false, 0),  createEnemy(4, x, y, false, 45)
+                createEnemy(4, x, y, false, 270),                                  createEnemy(4, x, y, false, 90)
+                createEnemy(4, x, y, false, 225), createEnemy(4, x, y, false,180), createEnemy(4, x, y, false, 135)
+            )
+            case(4) createBullet(enemyBulletLayer, x, y--2, 2, 2, bearing, getEnemyStat(getNPCID(ref), stat:atk))
+            case(6) do(
+                createBullet(enemyBulletLayer, x+21, y--3, 11, 4, 180+random(-5,5), getEnemyStat(getNPCID(ref), stat:atk))
+                createBullet(enemyBulletLayer, x--21, y--3, 11, 4, 180+random(-5,5), getEnemyStat(getNPCID(ref), stat:atk))
+            )
+            case(8) createBullet(enemyBulletLayer, x, y, 18, 2, 180, getEnemyStat(getNPCID(ref), stat:atk))
+            case(10) do(
+                # Boss has different shot type at different parts of its pattern 
+                switch(ge(instruction, 4)) do(
+                    case(0) do(
+                        # Circular burst 
+                        for(i, 1, 36) do(
+                            createBullet(enemyBulletLayer, x, y--20, 5, 1, 180+(i*10), getEnemyStat(getNPCID(ref), stat:atk))
+                        )
+                    )
+                    case(1) do(
+                        # Spread shot 
+                        for(i, -4, 4) do(
+                            createBullet(enemyBulletLayer, x+(i*2), y--10, 9, 4, 180+random(-5,5), getEnemyStat(getNPCID(ref), stat:atk))
+                        )
+                    )
+                    case(2) do(
+                        # Big slow bullets
+                        for(i, 0, 2) do(
+                            createBullet(enemyBulletLayer, x+random(-40,40), y--10, 14, 1, 180+random(-10,10), getEnemyStat(getNPCID(ref), stat:atk))
+                        )
+                    )
+                    case(3) do(
+                        # Curtain
+                        createBullet(enemyBulletLayer, (ge(instruction, 3)*8)+playfield:left+20, 10, 10, 1, 180+random(-5,5), getEnemyStat(getNPCID(ref), stat:atk)) # Right side 
+                        createBullet(enemyBulletLayer, ((0--ge(instruction, 3)*8)+160)+playfield:left, 10, 10, 1, 180+random(-5,5), getEnemyStat(getNPCID(ref), stat:atk)) # left side
+                    )
+                    case(4) do(
+                        # Spawn Lost Souls
+                        rand := random(1,6)
+                        for(i, 1, 3) do( # Left side
+                            if(rand == i) then(createEnemy(5, playfield:leftTile*20, random(6, 10)*20, powerup:1up))
+                            else(createEnemy(5, playfield:leftTile*20, random(6, 10)*20))
+                        )
+                        for(i, 4, 6) do( # Right side
+                            if(rand == i) then(createEnemy(5, playfield:leftTile*20, random(6, 10)*20, powerup:1up))
+                            else(createEnemy(5, (playfield:leftTile+10)*20, random(6, 10)*20))
+                        )
+                    )
+                )
+            )
+        )
+        # Decrement remaining shots
+        se(instruction, 3, ge(instruction, 3)--1)
+        # Set timer
+        setNPCExtra(ref, extra1, 1000)
+
+        playSound(sfx:enemyshoot, false, true)
+    end
+
+    subscript, instructionUpdates, begin
+        # Create new instructions as necessary
+        # Called only when the previous instruction is freed
+        switch(getNPCID(ref)) do(
+            case(10) do(
+                if(childCount(sliceChild(getNPCSlice(ref), 1)) == 0) then(
+                    defineBossPattern(ref)
+                )
+            )
+        )
+    end
+
+    subscript, bearingUpdates, begin
+        # For instructions that need to change after generation
+        switch(getNPCID(ref)) do(
+            case(2) do(
+                # Cerber head, follow player
+                if(ge(instruction, 0) > -1) then(
+                    bearing := get_bearing(sliceX(getNPCSlice(ref)), sliceY(getNPCSlice(ref)), sliceX(player), sliceY(player))
+                    se(lastChild(sliceChild(getNPCSlice(ref), 1)), 1, bearing) # set final bearing
+                )
+            )
+            case(8) do(
+                # Sword mech, follow horizontally
+                if(ge(instruction, 0) > -1 && ge(instruction, 2) > 0) then(
+                    if(sliceX(player)--sliceX(getNPCSlice(ref)) > 8) then(
+                        bearing := 90 # Player right of mech
+                    ) elseif(sliceX(player)--sliceX(getNPCSlice(ref)) < -8) then(
+                        bearing := 270
+                    ) else(
+                        if(sliceScreenY(getNPCSlice(ref)) > getScreenWidth/2) then(bearing := random(-45,45))
+                        elseif(sliceScreenY(getNPCSlice(ref)) < 80) then(bearing := random(225,135))
+                    )
+                )
+            )
+            case(10) do(
+                # Don't let it wander off screen 
+                if(sliceScreenX(getNPCSlice(ref)) < playfield:left) then(
+                    bearing := 90
+                ) elseif(sliceScreenX(getNPCSlice(ref)) > playfield:left+playfield:width) then(
+                    bearing := 270
+                ) elseif(sliceScreenY(getNPCSlice(ref)) < 4) then(
+                    bearing := 180
+                ) elseif(sliceScreenY(getNPCSlice(ref)) > getScreenHeight/2) then(
+                    bearing := 360
+                )
+            )
+        )
+    end
+end
+
+script, writeEnemyPath, ref, begin
+    # Create a number of arrays and populate them with instructions
+    # Each enemy type has unique behaviors 
+    # [d, a, w, s, p] where
+    # d = duration to move in ticks
+    # a = angle to move, 0-360
+    # w = wait ticks before shooting
+    # s = bullets to shoot
+    # p = picture to change to
+    variable(bearing, i)
+
+    switch(getNPCID(ref)) do(
+        case(0) do(
+            # Move down, wait, then move down and off screen
+            defineInstruction(26, 180, 10, 0)
+            defineInstruction(0, 180, 40, 8)
+            defineInstruction(0, 180, 20)
+            defineInstruction(-1)
+        )
+        case(1) do(
+            # Move downward, but append new instructions to follow player in other script
+            defineInstruction(70, 180, 0, 1)
+            defineInstruction(0, 180, 30, 1)
+            defineInstruction(0, -1, 30, 1)
+            for(i, 0, 3) do(
+                defineInstruction(0, 180, 30, 1)
+            )
+            defineInstruction(0, -1, 30, 1)
+            for(i, 0, 3) do(
+                defineInstruction(0, 180, 30, 1)
+            )
+            defineInstruction(0, -1, 30, 1)
+            defineInstruction(-1, 1)
+        )
+        case(2) do(
+            # Follow player for a while, update bearing in other script
+            bearing := get_bearing(sliceX(getNPCSlice(ref)), sliceY(getNPCSlice(ref)), sliceX(player), sliceY(player)) #toward player
+            defineInstruction(5, bearing)
+            for(i, 0, 1) do(
+                defineInstruction(40, bearing, 0, 1)
+            )
+            defineInstruction(-1, bearing)
+        )
+        case(3) do(
+            # Move down, spawning coworbs
+            defineInstruction(26, 180, 10, 0)
+            defineInstruction(20, 180, 10, 1)
+            defineInstruction(-1)
+        )
+        case(4) do(
+            # Move in initial direction and shoot
+            bearing := NPCExtra(ref, extra0)
+            defineInstruction(20, bearing, 0, 2)
+            defineInstruction(0, bearing, 20)
+            defineInstruction(-1, bearing)
+        )
+        case(5) do(
+            # Move toward player
+            bearing := get_bearing(sliceX(getNPCSlice(ref)), sliceY(getNPCSlice(ref)), sliceX(player), sliceY(player)) #toward player
+            defineInstruction(-1, bearing)
+        )
+        case(6) do(
+            # Move diagonally while firing
+            if(sliceScreenX(getNPCSlice(ref)) < getScreenWidth/2) then(
+                bearing := 45
+            ) else(
+                bearing := 135
+            )
+            defineInstruction(60)
+            for(i, 1, 12) do(
+                defineInstruction(40, (90*i)+bearing, 5, 4)
+            )
+            defineInstruction(-1, 360)
+        )
+        case(8) do(
+            # Move to center vertically, then follow player horizontally, shooting
+            defineInstruction(100, 180, 0, 1)
+            for(i, 0, 3) do(
+                defineInstruction(90, 0, 10, 1)
+            )
+            defineInstruction(-1)
+        )
+        case(10) do(
+            defineInstruction(60, 180, 30, 0)
+        )
+        case(else) defineInstruction()
+    )
+
+    subscript, defineInstruction, d=-1, a=180, w=0, s=0, p=-1, begin
+        variable(instruction)
+
+        instruction := initArray()
+        setParent(instruction, sliceChild(getNPCSlice(ref), 1))
+
+        append(instruction, d)
+        append(instruction, a)
+        append(instruction, w)
+        append(instruction, s)
+        if(p > -1) then(append(instruction, p))
+        else(append(instruction, getSpriteSetNumber(getNPCSprite(ref))))
+    end
+end
+
+script, giveEnemyInstruction, ref, d, a, w, s, p=-1, begin
+    # Prepend an instruction to the enemy's list, making it a priority
+    variable(instruction)
+
+    instruction := initArray()
+    setParent(instruction, sliceChild(getNPCSlice(ref), 1))
+    sliceToBack(instruction)
+
+    append(instruction, d)
+    append(instruction, a)
+    append(instruction, w)
+    append(instruction, s)
+    if(p > -1) then(append(instruction, p))
+    else(append(instruction, getSpriteSetNumber(getNPCSprite(ref))))
+end
+
+script, defineBossPattern, ref, begin
+    # Defines all the instructions for the boss's behavior 
+    # This can be called when the boss is out of instructions to reset its behavior 
+    appendEnemyInstruction(ref, 0, 180, 30, 5, 0) # First Burst
+    appendEnemyInstruction(ref, 0, 180, 30, 0, 0)
+
+    appendEnemyInstruction(ref, 10, 250, 0, 1, 1) # 4 Spread shots while moving left
+    appendEnemyInstruction(ref, 10, 255, 0, 1, 1) 
+    appendEnemyInstruction(ref, 10, 260, 0, 1, 1) 
+    appendEnemyInstruction(ref, 10, 265, 0, 1, 1)
+
+    appendEnemyInstruction(ref, 50, 90, 10, 2, 0) # move to center and fire burst 
+
+    appendEnemyInstruction(ref, 30, 60, 0, 2, 2) # Move up and fire some big slow bullets
+    appendEnemyInstruction(ref, 60, 245, 0, 2, 2)
+
+    appendEnemyInstruction(ref, 0, 180, 30, 20, 3) # Curtain bullets
+
+    appendEnemyInstruction(ref, 10, 90, 10, 1, 1) # burst shot
+    appendEnemyInstruction(ref, 10, 90, 10, 1, 1) # burst shot 
+
+    appendEnemyInstruction(ref, 15, 360, 20, 1, 4) # Spawn Lost souls 
+end

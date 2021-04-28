@@ -1,0 +1,147 @@
+# move.hss
+# Includes scripts for moving the player and enemies
+
+# ========================================
+# MOVING HEROES/NPCS
+# ========================================
+
+script, movePlayer, begin
+    # Called from mainGameLoop
+    # Checks input and applies movement to player
+    variable(horiz, vert, bearing, subX, subY, xv, yv, clamp)
+
+    if(getHeroStat(me, stat:hp) <= 0) then(exitScript) # Exit if dead
+    
+    # Input variables from keypress handler
+    if(wantLeft) then(horiz := -1, setHeroDirection(me, left))
+    else if(wantRight) then(horiz := 1, setHeroDirection(me, right))
+    else(horiz := 0)
+
+    if(wantUp) then(vert := -1, setHeroDirection(me, up))
+    else if(wantDown) then(vert := 1, setHeroDirection(me, down))
+    else(vert := 0)
+
+    if(horiz == 0 && vert == 0) then(
+        # No movement, reset sprite
+        setHeroDirection(me, up)
+    )
+
+    if(wantShift) then(
+        # Focusing, move slower
+        clamp := player:speed/2
+    ) else(
+        clamp := player:speed
+    )
+
+    # xv & yv (velocities) stored in hero slice data slots 0 and 1
+    xv := getPlayerXV() + (player:accel * horiz)
+    yv := getPlayerYV() + (player:accel * vert)
+    xv := clampValue(xv, 0--clamp, clamp)
+    yv := clampValue(yv, 0--clamp, clamp)
+    # Get direction and distance to target in subpixels (1000ths of pixels)
+    bearing := get_bearing(sliceSubX(player), sliceSubY(player), sliceSubX(player)+getPlayerXV(), sliceSubY(player)+getPlayerYV())
+    subX := get_x_subpixels(abs(xv), bearing) # actual value to move sprite with
+    subY := get_y_subpixels(abs(yv), bearing) # ^
+    
+    # Deleceration
+    if(horiz == 0) then(xv := xv/2)
+    if(vert == 0) then(yv := yv/2)
+    # Snap to Screen Edges
+    if(sliceScreenX(player) + (sliceWidth(player)/2) + (xv/1000) < playfield:left) then(
+        setSliceScreenX(player, playfield:left--(sliceWidth(player)/2))
+        putSliceSubpixel(player, sliceX(player)*1000, sliceSubY(player))
+        subX := 0
+        xv := 0
+    ) elseif(sliceScreenX(player) + (sliceWidth(player)/2) + (xv/1000) > playfield:right) then(
+        setSliceScreenX(player, playfield:right--(sliceWidth(player)/2))
+        putSliceSubpixel(player, sliceX(player)*1000, sliceSubY(player))
+        subX := 0
+        xv := 0
+    )
+    if(sliceScreenY(player) + (sliceHeight(player)/2) + (yv/1000) < playfield:top) then(
+        setSliceScreenY(player, playfield:top--(sliceHeight(player)/2))
+        putSliceSubpixel(player, sliceSubX(player), sliceY(player)*1000)
+        subY := 0
+        yv := 0
+    ) elseif(sliceScreenY(player) + (sliceHeight(player)/2) + (yv/1000) > playfield:bottom) then(
+        setSliceScreenY(player, playfield:bottom--(sliceHeight(player)/2))
+        putSliceSubpixel(player, sliceSubX(player), sliceY(player)*1000)
+        subY := 0
+        yv := 0
+    )
+
+    applyMove(player, subX, subY, xv, yv)
+end
+
+script, moveEnemies, begin
+    # Called from mainGameLoop
+    # Loop through all NPCs and checks their movement values
+    variable(ref, bearing, subX, subY, xv, yv, horiz, vert, clamp)
+
+    if(enemiesAreSuspended) then(exitScript)
+
+    ref := nextNPCReference()
+    while(ref) do(
+        # NPC extra0 stores the direction the NPC wants to go in, in degrees
+        bearing := NPCExtra(ref, extra0)
+        if(bearing > 180) then(horiz := -1)
+        elseif(bearing > 0 && bearing < 180) then(horiz := 1)
+        if((bearing > 270 || bearing < 90) && bearing <> 0) then(vert := -1)
+        elseif(bearing < 270 && bearing > 90) then(vert := 1)
+
+        # Check to see if enemy has an instruction to move
+        if(readInstructionDuration(ref) == 0) then(horiz := 0, vert := 0)
+
+        clamp := getEnemySpeed(ref) # constrain to top speed
+        xv := getEnemyXV(ref) + (getEnemyAccel(ref)*horiz)
+        yv := getEnemyYV(ref) + (getEnemyAccel(ref)*vert)
+        xv := clampValue(xv, 0--clamp, clamp)
+        yv := clampValue(yv, 0--clamp, clamp)
+
+        subX := get_x_subpixels(abs(xv), bearing)
+        subY := get_y_subpixels(abs(yv), bearing)
+        # Deleceration
+        # Incremental to allow for drifting enemies, eg. low acceleration+high speed 
+        if(horiz == 0) then(
+            if(xv < 0) then(
+                xv += getEnemyAccel(ref)
+                if(xv > 0) then(xv := 0)
+            )
+            else(
+                xv -= getEnemyAccel(ref)
+                if(xv < 0) then(xv := 0)
+            )
+            if(abs(xv) < getEnemyAccel(ref)) then(xv := 0)
+        )
+        if(vert == 0) then(
+            if(yv < 0) then(
+                yv += getEnemyAccel(ref)
+                if(yv > 0) then(yv := 0)
+            )
+            else(
+                yv -= getEnemyAccel(ref)
+                if(yv < 0) then(yv := 0)
+            )
+            if(abs(yv) < getEnemyAccel(ref)) then(yv := 0)
+        )
+
+        applyMove(getNPCSlice(ref), subX, subY, xv, yv)
+
+        ref := nextNPCReference(ref)
+    )
+end
+
+script, applyMove, handle, subX, subY, xv, yv, begin
+    # Called in movePlayer and moveEnemies
+    # Moves a slice based on relative x and y
+
+    # Store subpixel position
+    putSliceSubpixel(handle, sliceSubX(handle)+subX, sliceSubY(handle)+subY)
+
+    # Place enemy/player at pixel location from subpixel info
+    putSlice(handle, sliceSubX(handle)/1000, sliceSubY(handle)/1000)
+    updateNPCorHeroFromSlice(handle)
+    # Set player/enemy's stored velocities
+    setSliceXV(handle, xv)
+    setSliceYV(handle, yv)
+end
