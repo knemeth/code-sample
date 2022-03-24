@@ -1,0 +1,88 @@
+--!strict
+
+-- Objects that can be collected underwater
+-- Types of fish determine swim pattern and are: Meandering and Steady
+
+--[[Services]]--
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+
+--[[Requirements]]--
+local require = require(ReplicatedStorage:WaitForChild("Nevermore"))
+local GetRemoteEvent = require("GetRemoteEvent")
+local ClassUtils = require("ClassUtils")
+local Component = require("Component")
+
+--[[Events]]--
+local collectEvent = GetRemoteEvent("UnderwaterCollectEvent")
+
+--[[Module]]--
+local random = Random.new()
+
+--[[Class]]--
+local UnderwaterCollectible = ClassUtils.NewClass(Component)
+
+function UnderwaterCollectible:_Constructor(object)
+	self._object = object.Model
+	self._prompt = self._object:FindFirstChildWhichIsA("ProximityPrompt", true)
+	self._speed = object.Speed.Value
+	self._type = object.Type.Value
+
+	if self._prompt then
+		self._prompt.Triggered:Connect(function(player)
+			collectEvent:FireClient(player, self)
+		end)
+		self._prompt.ObjectText = object.Name
+	end
+	
+	self._path = object.Path:GetChildren()
+	self._nextNode = 1
+	
+	self:_MoveToNextNode()
+end
+
+function UnderwaterCollectible:_MoveToNextNode()
+	self._nextNode += 1
+	if self._nextNode > #self._path then
+		self._nextNode = 1
+	end
+	
+	local speed, waitTime, easing
+	if self._type == "Steady" then
+		speed = self._speed
+		waitTime = 0
+		easing = Enum.EasingStyle.Linear
+	elseif self._type == "Meandering" then
+		speed = random:NextNumber(self._speed / 2, self._speed + (self._speed / 2))
+		if speed == 0 then speed = self._speed end
+		waitTime = random:NextNumber()
+		easing = Enum.EasingStyle.Sine
+	end
+	
+	local primaryPart = self._object.PrimaryPart
+	local target = self._path[self._nextNode].Position
+	local magnitude = (target - primaryPart.Position).Magnitude
+	
+	primaryPart.CFrame = CFrame.lookAt(primaryPart.Position, target)
+	
+	local tweenInfo = TweenInfo.new(magnitude / speed, easing)
+	local goal = {
+		Position = target
+	}
+	local tween = TweenService:Create(primaryPart, tweenInfo, goal)
+	tween:Play()
+	tween.Completed:Connect(function()
+		if waitTime > 0 then
+			delay(waitTime, function()
+				self:_MoveToNextNode()
+			end)
+		else
+			self:_MoveToNextNode()
+		end
+	end)
+end
+
+UnderwaterCollectible:_CacheComponents("UnderwaterCollectible")
+
+return nil
